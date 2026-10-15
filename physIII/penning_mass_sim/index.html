@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Penning trap: cyclotron orbit and detector</title>
+<style>
+:root{
+  --bg:#ffffff; --fg:#1a1a1a; --muted:#6b6b6b; --card:#f4f4f2; --line:#d0d0cc;
+  --accent:#d85a30; --ion:#2b6cb0; --det:#2f9e6b; --field:#9aa0a6;
+  box-sizing:border-box; padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#16171a; --fg:#ececec; --muted:#9a9a9a; --card:#222428; --line:#3a3d42;
+    --accent:#f08a5d; --ion:#6fb1ff; --det:#4cd39a; --field:#6c7178; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#16171a; --fg:#ececec; --muted:#9a9a9a; --card:#222428; --line:#3a3d42;
+  --accent:#f08a5d; --ion:#6fb1ff; --det:#4cd39a; --field:#6c7178; color-scheme:dark;
+}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.4}
+main{max-width:640px;margin:0 auto;padding:14px}
+h1{font-size:18px;margin:4px 0 2px}
+p.sub{margin:0 0 10px;color:var(--muted);font-size:13px}
+.card{background:var(--card);border-radius:12px;padding:10px;margin-bottom:10px}
+canvas{width:100%;display:block}
+.stats{display:flex;gap:8px;margin-bottom:10px}
+.stat{flex:1;background:var(--card);border-radius:12px;padding:8px 10px}
+.stat .l{font-size:11px;color:var(--muted)}
+.stat .v{font-size:20px;font-weight:600;font-variant-numeric:tabular-nums}
+.ctrl{display:flex;align-items:center;gap:10px;margin:8px 0;font-size:13px}
+.ctrl label{flex:0 0 118px;color:var(--muted)}
+.ctrl input[type=range]{flex:1}
+.ctrl output{flex:0 0 64px;text-align:right;font-variant-numeric:tabular-nums}
+.btns{display:flex;gap:8px}
+button{flex:1;padding:10px;border:0;border-radius:10px;background:var(--accent);color:#fff;font-size:14px;font-weight:600}
+button.alt{background:var(--card);color:var(--fg);border:1px solid var(--line)}
+.note{font-size:12px;color:var(--muted);margin-top:6px}
+.chips{display:flex;gap:6px;margin-top:8px}
+button.chip{flex:1;padding:7px 4px;font-size:13px;background:var(--bg);color:var(--fg);border:1px solid var(--line)}
+button.chip.on{background:var(--det);color:#fff;border-color:var(--det)}
+</style>
+</head>
+<body>
+<main>
+  <h1>Ion in a Penning trap</h1>
+  <p class="sub">¹²³Sb⁺ circles in a magnetic field; a detector clicks each time it passes.</p>
+
+  <div class="stats">
+    <div class="stat"><div class="l">Cyclotron freq. f<sub>c</sub></div><div class="v" id="fc">1.000 MHz</div></div>
+    <div class="stat"><div class="l">Detector clicks n</div><div class="v" id="count">0</div></div>
+    <div class="stat"><div class="l">Elapsed (real)</div><div class="v" id="elapsed">0 µs</div></div>
+  </div>
+
+  <div class="card"><canvas id="orbit"></canvas></div>
+  <div class="card">
+    <div class="l" style="font-size:12px;color:var(--muted);margin-bottom:4px">Detector signal I(t) — last 4 periods</div>
+    <canvas id="trace"></canvas>
+  </div>
+
+  <div class="card">
+    <div style="font-size:12px;color:var(--muted);margin-bottom:4px">Fourier transform |A(ω/2π)|² (eq. 21.1) vs. frequency</div>
+    <canvas id="ft"></canvas>
+    <div class="chips">
+      <button class="chip on" data-n="live">n = live</button>
+      <button class="chip" data-n="50">50</button>
+      <button class="chip" data-n="150">150</button>
+      <button class="chip" data-n="400">400</button>
+    </div>
+    <div class="note" id="ftinfo"></div>
+  </div>
+
+  <div class="card">
+    <div class="ctrl"><label for="B">Magnetic field B</label><input id="B" type="range" min="2" max="12" step="0.1" value="8"><output id="Bo">8.0 T</output></div>
+    <div class="ctrl"><label for="w">Pulse width t₁/T</label><input id="w" type="range" min="0.02" max="0.5" step="0.01" value="0.1"><output id="wo">0.10</output></div>
+    <div class="ctrl"><label for="s">Playback speed</label><input id="s" type="range" min="0.2" max="10" step="0.1" value="1"><output id="so">1.0×</output></div>
+    <div class="btns"><button id="pp">Pause</button><button class="alt" id="rs">Reset</button></div>
+    <div class="note">Real orbit: f = qB / (2π m) ≈ 1 MHz at 8 T (m = 122.9 u). The animation is slowed by about 2,000,000× so you can see it. Set t₁/T = 0.5 to match part (c). The detector is "on" while the ion is inside the green arc.</div>
+  </div>
+</main>
+
+<script>
+(function(){
+  const q = 1.602176634e-19, u = 1.66053906660e-27, m = 122.9042 * u;
+  const $ = id => document.getElementById(id);
+  const orbitC = $('orbit'), traceC = $('trace'), ftC = $('ft');
+  const octx = orbitC.getContext('2d'), tctx = traceC.getContext('2d'), ftctx = ftC.getContext('2d');
+  let ftMode = null; // null = live click count
+
+  let B = 8, wFrac = 0.1, speed = 1, playing = true;
+  let phase = 0;              // total orbital angle (rad), clockwise
+  let count = 0, wasIn = false;
+  let samples = [];           // {p: periods, i: 0|1}
+  let trail = [];
+  const detAngle = -Math.PI / 2;  // top of the orbit
+  const BASE_SLOW = 2e6;
+  let last = performance.now();
+
+  function css(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+  const fc = () => q * B / (2 * Math.PI * m);
+
+  function size(){
+    const dpr = window.devicePixelRatio || 1;
+    const w = orbitC.parentElement.clientWidth - 20;
+    orbitC.style.height = w * 0.9 + 'px';
+    orbitC.width = w * dpr; orbitC.height = w * 0.9 * dpr;
+    traceC.style.height = '110px';
+    traceC.width = w * dpr; traceC.height = 110 * dpr;
+    ftC.style.height = '200px'; ftC.width = w * dpr; ftC.height = 200 * dpr; ftC._w = w; ftC._h = 200;
+    octx.setTransform(dpr,0,0,dpr,0,0); tctx.setTransform(dpr,0,0,dpr,0,0); ftctx.setTransform(dpr,0,0,dpr,0,0);
+    orbitC._w = w; orbitC._h = w * 0.9; traceC._w = w; traceC._h = 110;
+  }
+
+  function wrap(a){ a = (a + Math.PI) % (2*Math.PI); if(a<0) a += 2*Math.PI; return a - Math.PI; }
+
+  function drawOrbit(inWin){
+    const W = orbitC._w, H = orbitC._h, c = octx;
+    c.clearRect(0,0,W,H);
+    const cx = W/2, cy = H/2, R = Math.min(W,H)*0.33;
+
+    // B-field dots (out of page)
+    c.fillStyle = css('--field'); c.strokeStyle = css('--field'); c.lineWidth = 1;
+    const step = 34;
+    for(let x = step/2; x < W; x += step){
+      for(let y = step/2; y < H; y += step){
+        c.beginPath(); c.arc(x,y,3.2,0,6.283); c.globalAlpha = 0.35; c.stroke();
+        c.beginPath(); c.arc(x,y,1.1,0,6.283); c.fill(); c.globalAlpha = 1;
+      }
+    }
+    c.fillStyle = css('--muted'); c.font = '12px sans-serif'; c.textAlign = 'left';
+    c.fillText('B (out of page), ' + B.toFixed(1) + ' T', 10, 18);
+
+    // orbit circle
+    c.strokeStyle = css('--line'); c.lineWidth = 2; c.setLineDash([5,5]);
+    c.beginPath(); c.arc(cx,cy,R,0,6.283); c.stroke(); c.setLineDash([]);
+
+    // detection window arc
+    const half = Math.PI * wFrac;
+    c.strokeStyle = css('--det'); c.lineWidth = inWin ? 9 : 6; c.globalAlpha = inWin ? 1 : 0.55;
+    c.beginPath(); c.arc(cx,cy,R,detAngle-half,detAngle+half); c.stroke(); c.globalAlpha = 1;
+
+    // detector block
+    const dx = cx + (R+22)*Math.cos(detAngle), dy = cy + (R+22)*Math.sin(detAngle);
+    c.fillStyle = inWin ? css('--det') : css('--card'); c.strokeStyle = css('--det'); c.lineWidth = 2;
+    c.beginPath(); c.roundRect(dx-26, dy-13, 52, 26, 6); c.fill(); c.stroke();
+    c.fillStyle = inWin ? '#fff' : css('--fg'); c.font = 'bold 12px sans-serif'; c.textAlign = 'center';
+    c.fillText(inWin ? 'CLICK' : 'detector', dx, dy+4);
+    if(inWin){
+      c.strokeStyle = css('--det'); c.lineWidth = 2;
+      for(let k=1;k<=2;k++){ c.globalAlpha = 0.6/k; c.beginPath(); c.arc(dx,dy,26+k*9,0,6.283); c.stroke(); }
+      c.globalAlpha = 1;
+    }
+
+    // trail
+    for(let i=0;i<trail.length;i++){
+      const a = i/trail.length;
+      c.fillStyle = css('--ion'); c.globalAlpha = a*0.45;
+      c.beginPath(); c.arc(trail[i][0], trail[i][1], 2+a*2, 0, 6.283); c.fill();
+    }
+    c.globalAlpha = 1;
+
+    // ion
+    const ix = cx + R*Math.cos(phase), iy = cy + R*Math.sin(phase);
+    c.fillStyle = css('--ion'); c.beginPath(); c.arc(ix,iy,9,0,6.283); c.fill();
+    c.fillStyle = '#fff'; c.font = 'bold 12px sans-serif'; c.textAlign='center'; c.fillText('+', ix, iy+4);
+
+    // velocity (clockwise tangent) and force (toward center)
+    const tx = -Math.sin(phase), ty = Math.cos(phase);
+    arrow(c, ix, iy, ix+tx*30, iy+ty*30, css('--accent'));
+    arrow(c, ix, iy, ix-Math.cos(phase)*28, iy-Math.sin(phase)*28, css('--muted'));
+    c.font = '11px sans-serif'; c.textAlign='left';
+    c.fillStyle = css('--accent'); c.fillText('v', ix+tx*30+4, iy+ty*30+4);
+    c.fillStyle = css('--muted'); c.fillText('F = qv×B', cx-18, cy+4);
+  }
+
+  function arrow(c,x1,y1,x2,y2,col){
+    c.strokeStyle = col; c.fillStyle = col; c.lineWidth = 2;
+    c.beginPath(); c.moveTo(x1,y1); c.lineTo(x2,y2); c.stroke();
+    const a = Math.atan2(y2-y1,x2-x1);
+    c.beginPath(); c.moveTo(x2,y2);
+    c.lineTo(x2-8*Math.cos(a-0.4), y2-8*Math.sin(a-0.4));
+    c.lineTo(x2-8*Math.cos(a+0.4), y2-8*Math.sin(a+0.4)); c.closePath(); c.fill();
+  }
+
+  function drawTrace(){
+    const W = traceC._w, H = traceC._h, c = tctx;
+    c.clearRect(0,0,W,H);
+    const padL = 22, padB = 16, padT = 8, span = 4;
+    const pNow = phase / (2*Math.PI);
+    const x = p => padL + (p - (pNow - span)) / span * (W - padL - 6);
+    const y = v => padT + (1 - v) * (H - padT - padB);
+
+    c.strokeStyle = css('--line'); c.lineWidth = 1;
+    c.beginPath(); c.moveTo(padL, y(0)); c.lineTo(W-4, y(0)); c.moveTo(padL, padT); c.lineTo(padL, y(0)); c.stroke();
+    c.fillStyle = css('--muted'); c.font = '11px sans-serif'; c.textAlign = 'right';
+    c.fillText('1', padL-5, y(1)+4); c.fillText('0', padL-5, y(0)+4);
+    c.textAlign = 'center';
+    for(let k = Math.ceil(pNow-span); k <= Math.floor(pNow); k++){
+      const xx = x(k); if(xx < padL) continue;
+      c.strokeStyle = css('--line'); c.beginPath(); c.moveTo(xx,y(0)); c.lineTo(xx,y(0)+4); c.stroke();
+      c.fillText('T×' + k, xx, H-3);
+    }
+
+    c.strokeStyle = css('--det'); c.lineWidth = 2.2; c.beginPath();
+    let started = false;
+    for(const s of samples){
+      const xx = x(s.p); if(xx < padL) continue;
+      if(!started){ c.moveTo(xx, y(s.i)); started = true; } else c.lineTo(xx, y(s.i));
+    }
+    c.stroke();
+  }
+
+  function drawFT(){
+    const n = Math.max(1, ftMode == null ? count : ftMode);
+    const f0 = fc(), W = ftC._w, H = ftC._h, c = ftctx;
+    const range = 0.02 * f0, padL = 44, padR = 8, padT = 10, padB = 20;
+    const A2 = (df, nn) => {
+      const r = df / f0, om = 2*Math.PI*(f0+df), e = Math.PI * r, s = Math.sin(e);
+      const ratio = Math.abs(s) < 1e-12 ? nn : Math.sin(nn*e)/s;
+      const v = (2/om) * Math.sin(Math.PI*(1+r)*wFrac) * ratio;
+      return v*v/(2*Math.PI);
+    };
+    const refs = [{n:50,col:'#4a78c2'},{n:150,col:'#e08a3c'},{n:400,col:'#7fae3a'}];
+    const peak = A2(0, n);
+    const pmax = Math.max(peak, A2(0,400), A2(0,50), A2(0,150));
+    const top = Math.ceil(Math.log10(pmax)), bot = top - 4;
+    const X = f => padL + (f - (f0-range))/(2*range) * (W - padL - padR);
+    const Y = v => padT + (top - Math.max(Math.log10(Math.max(v,1e-300)), bot))/4 * (H - padT - padB);
+    const sup = k => String(k).replace(/-/g,'\u207b').replace(/\d/g, d => '\u2070\u00b9\u00b2\u00b3\u2074\u2075\u2076\u2077\u2078\u2079'[+d]);
+    c.clearRect(0,0,W,H);
+
+    // grid + y labels (log decades)
+    c.lineWidth = 1; c.font = '10px sans-serif';
+    for(let k = bot; k <= top; k++){
+      const y = padT + (top-k)/4*(H-padT-padB);
+      c.strokeStyle = css('--line'); c.globalAlpha = 0.7;
+      c.beginPath(); c.moveTo(padL, y); c.lineTo(W-padR, y); c.stroke(); c.globalAlpha = 1;
+      c.fillStyle = css('--muted'); c.textAlign = 'right'; c.fillText('10' + sup(k), padL-4, y+3);
+    }
+    // x ticks (absolute frequency in Hz)
+    c.textAlign = 'center';
+    for(let k=-2;k<=2;k++){
+      const f = f0 + k*range/2, x = X(f);
+      c.strokeStyle = css('--line'); c.globalAlpha = 0.7;
+      c.beginPath(); c.moveTo(x, padT); c.lineTo(x, H-padB); c.stroke(); c.globalAlpha = 1;
+      c.fillStyle = css('--muted'); c.fillText(Math.round(f).toLocaleString('en-US'), Math.min(Math.max(x, padL+22), W-padR-22), H-5);
+    }
+    c.textAlign = 'right'; c.fillStyle = css('--muted'); c.fillText('Freq. (Hz)', W-padR, H-padB-4);
+
+    const N = 1000;
+    const curve = nn => {
+      c.beginPath();
+      for(let i=0;i<=N;i++){
+        const f = f0 - range + 2*range*i/N;
+        const y = Y(A2(f-f0, nn));
+        i ? c.lineTo(X(f), y) : c.moveTo(X(f), y);
+      }
+      c.stroke();
+    };
+    c.save(); c.beginPath(); c.rect(padL, padT, W-padL-padR, H-padT-padB); c.clip();
+    refs.forEach(r => { c.strokeStyle = r.col; c.globalAlpha = 0.55; c.lineWidth = 1.5; curve(r.n); });
+    c.globalAlpha = 1; c.strokeStyle = css('--accent'); c.lineWidth = 2.4; curve(n);
+
+    // HWHM markers
+    const step = f0 / n / 2000;
+    let d = 0, it = 0;
+    while(A2(d, n) > 0.5*peak && d < f0 && it < 20000){ d += step; it++; }
+    const hw = d;
+    if(hw < range){
+      c.strokeStyle = css('--fg'); c.lineWidth = 1.2; c.setLineDash([4,3]);
+      [f0-hw, f0+hw].forEach(f => { c.beginPath(); c.moveTo(X(f), padT); c.lineTo(X(f), H-padB); c.stroke(); });
+      c.setLineDash([]);
+    }
+    c.restore();
+
+    // legend
+    c.textAlign = 'left'; c.font = '11px sans-serif';
+    let lx = padL + 6;
+    [...refs.map(r => [r.col, 'n=' + r.n]), [css('--accent'), 'n=' + n]].forEach(([col, t]) => {
+      c.fillStyle = col; c.fillRect(lx, padT+4, 10, 3); c.fillStyle = css('--fg'); c.fillText(t, lx+14, padT+9);
+      lx += c.measureText(t).width + 26;
+    });
+
+    const mass = m/u, rel = hw / f0;
+    $('ftinfo').innerHTML = 'Selected curve (orange-red): n = <b>' + n + '</b>, peak |A|\u00b2 = ' + peak.toExponential(2) + '. Dashed lines mark f<sub>c</sub> \u00b1 HWHM.<br>' +
+      'HWHM = <b>' + (hw >= f0 ? '> f_c' : hw.toFixed(hw < 100 ? 2 : 0) + ' Hz') + '</b> &rarr; &delta;m/m = &delta;f/f = <b>' + rel.toExponential(2) + '</b>, so m = ' + mass.toFixed(4) + ' \u00b1 ' + (mass*rel).toExponential(1) + ' u.<br>' +
+      'Faint curves are n = 50, 150, 400 as in Fig. 4 (use t\u2081/T = 0.5 to match).';
+  }
+
+  function tick(now){
+    const dt = Math.min(0.05, (now - last)/1000); last = now;
+    if(playing){
+      const revPerSec = fc() / BASE_SLOW * speed;     // visual revolutions per second
+      phase += 2*Math.PI * revPerSec * dt;
+      const inWin = Math.abs(wrap(phase - detAngle)) < Math.PI * wFrac;
+      if(inWin && !wasIn) count++;
+      wasIn = inWin;
+      const cx = orbitC._w/2, cy = orbitC._h/2, R = Math.min(orbitC._w, orbitC._h)*0.33;
+      trail.push([cx+R*Math.cos(phase), cy+R*Math.sin(phase)]);
+      if(trail.length > 45) trail.shift();
+      samples.push({p: phase/(2*Math.PI), i: inWin ? 1 : 0});
+      const cutoff = phase/(2*Math.PI) - 4.1;
+      while(samples.length && samples[0].p < cutoff) samples.shift();
+    }
+    const inWin = Math.abs(wrap(phase - detAngle)) < Math.PI * wFrac;
+    drawOrbit(inWin); drawTrace(); drawFT();
+    $('count').textContent = count;
+    $('fc').textContent = (fc()/1e6).toFixed(3) + ' MHz';
+    const t_us = phase/(2*Math.PI) / fc() * 1e6;
+    $('elapsed').textContent = t_us.toFixed(2) + ' µs';
+    requestAnimationFrame(tick);
+  }
+
+  function reset(){ phase = 0; count = 0; wasIn = false; samples = []; trail = []; }
+
+  $('B').oninput = e => { B = +e.target.value; $('Bo').textContent = B.toFixed(1) + ' T'; };
+  $('w').oninput = e => { wFrac = +e.target.value; $('wo').textContent = wFrac.toFixed(2); };
+  $('s').oninput = e => { speed = +e.target.value; $('so').textContent = speed.toFixed(1) + '×'; };
+  $('pp').onclick = e => { playing = !playing; e.target.textContent = playing ? 'Pause' : 'Play'; };
+  $('rs').onclick = reset;
+  document.querySelectorAll('.chip').forEach(b => b.onclick = () => {
+    document.querySelectorAll('.chip').forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+    ftMode = b.dataset.n === 'live' ? null : +b.dataset.n;
+  });
+  window.addEventListener('resize', size);
+  size(); requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
